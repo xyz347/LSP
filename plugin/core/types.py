@@ -614,12 +614,13 @@ class PathMap:
 
 
 class TransportConfig:
-    __slots__ = ("name", "command", "tcp_port", "env", "listener_socket")
+    __slots__ = ("name", "command", "settings", "tcp_port", "env", "listener_socket")
 
     def __init__(
         self,
         name: str,
         command: List[str],
+        settings: Optional[Dict[str, Any]],
         tcp_port: Optional[int],
         env: Dict[str, str],
         listener_socket: Optional[socket.socket]
@@ -628,6 +629,7 @@ class TransportConfig:
             raise ValueError('neither "command" nor "tcp_port" is provided; cannot start a language server')
         self.name = name
         self.command = command
+        self.settings = settings
         self.tcp_port = tcp_port
         self.env = env
         self.listener_socket = listener_socket
@@ -798,7 +800,10 @@ class ClientConfig:
                 env[key] = sublime.expand_variables(value, variables) + os.path.pathsep + env[key]
             else:
                 env[key] = sublime.expand_variables(value, variables)
-        return TransportConfig(self.name, command, tcp_port, env, listener_socket)
+        usets = self.settings.get("user_define")
+        if usets is None:
+            usets = {}
+        return TransportConfig(self.name, command, usets, tcp_port, env, listener_socket)
 
     def set_view_status(self, view: sublime.View, message: str) -> None:
         if sublime.load_settings("LSP.sublime-settings").get("show_view_status"):

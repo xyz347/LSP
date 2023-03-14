@@ -91,19 +91,21 @@ class JsonRpcProcessor(AbstractProcessor[Dict[str, Any]]):
 
 class ProcessTransport(Transport[T]):
 
-    def __init__(self, name: str, process: subprocess.Popen, socket: Optional[socket.socket], reader: IO[bytes],
+    def __init__(self, config: TransportConfig, process: subprocess.Popen, socket: Optional[socket.socket], reader: IO[bytes],
                  writer: IO[bytes], stderr: Optional[IO[bytes]], processor: AbstractProcessor[T],
                  callback_object: TransportCallbacks[T]) -> None:
         self._closed = False
+        self._config = config
+        self._uri_replace = config.settings.get("uri_replace")
         self._process = process
         self._socket = socket
         self._reader = reader
         self._writer = writer
         self._stderr = stderr
         self._processor = processor
-        self._reader_thread = threading.Thread(target=self._read_loop, name='{}-reader'.format(name))
-        self._writer_thread = threading.Thread(target=self._write_loop, name='{}-writer'.format(name))
-        self._stderr_thread = threading.Thread(target=self._stderr_loop, name='{}-stderr'.format(name))
+        self._reader_thread = threading.Thread(target=self._read_loop, name='{}-reader'.format(config.name))
+        self._writer_thread = threading.Thread(target=self._write_loop, name='{}-writer'.format(config.name))
+        self._stderr_thread = threading.Thread(target=self._stderr_loop, name='{}-stderr'.format(config.name))
         self._callback_object = weakref.ref(callback_object)
         self._send_queue = Queue(0)  # type: Queue[Union[T, None]]
         self._reader_thread.start()
@@ -141,6 +143,7 @@ class ProcessTransport(Transport[T]):
                 if payload is None:
                     continue
 
+                self._read_replace(payload)
                 def invoke(p: T) -> None:
                     if self._closed:
                         return
@@ -190,6 +193,7 @@ class ProcessTransport(Transport[T]):
                 d = self._send_queue.get()
                 if d is None:
                     break
+                self._write_replace(d)
                 self._processor.write_data(self._writer, d)
                 self._writer.flush()
         except (BrokenPipeError, AttributeError):
@@ -218,6 +222,35 @@ class ProcessTransport(Transport[T]):
             exception_log('unexpected exception type in stderr loop', ex)
         self._send_queue.put_nowait(None)
 
+    def _write_replace(self, d: Dict[str, Any]) -> None:
+        if self._uri_replace and 'params' in d and 'textDocument' in d['params'] and 'uri' in d['params']['textDocument']:
+            p = d['params']['textDocument']['uri']
+            for k in self._uri_replace:
+                p = p.replace(k, self._uri_replace[k])
+            d['params']['textDocument']['uri'] = p
+
+    def _read_replace(self, d: Dict[str, Any]) -> None:
+        p = None
+        if not self._uri_replace:
+            return
+        elif 'params' in d and 'textDocument' in d['params'] and 'uri' in d['params']['textDocument']:
+            p = d['params']['textDocument']['uri']
+            for k in self._uri_replace:
+                p = p.replace(self._uri_replace[k], v)
+            d['params']['textDocument']['uri'] = p
+        elif 'params' in d and 'type' in d['params'] and d['params']['type'] ==3 and 'message' in d['params']:
+            p = d['params']['message']
+            for k in self._uri_replace:
+                p = p.replace(self._uri_replace[k], k)
+            d['params']['message'] = p
+        elif 'params' in d and 'items' in d['params']:
+            items = d['params']['items']
+            for item in items:
+                if 'scopeUri' in item:
+                    p = item['scopeUri']
+                    for k in self._uri_replace:
+                        p = p.replace(self._uri_replace[k], k)
+                    item['scopeUri'] = p
 
 # Can be a singleton since it doesn't hold any state.
 json_rpc_processor = JsonRpcProcessor()
@@ -253,7 +286,7 @@ def create_transport(config: TransportConfig, cwd: Optional[str],
     else:
         process = start_subprocess()
         if config.tcp_port:
-            sock = _connect_tcp(config.tcp_port)
+            sock = _connect_tcp(config.settings.get("tcp_host"), config.tcp_port)
             if sock is None:
                 raise RuntimeError("Failed to connect on port {}".format(config.tcp_port))
             reader = sock.makefile('rwb')  # type: ignore
@@ -264,7 +297,7 @@ def create_transport(config: TransportConfig, cwd: Optional[str],
     if not reader or not writer:
         raise RuntimeError('Failed initializing transport: reader: {}, writer: {}'.format(reader, writer))
     return ProcessTransport(
-        config.name, process, sock, reader, writer, process.stderr, json_rpc_processor, callback_object)  # type: ignore
+        config, process, sock, reader, writer, process.stderr, json_rpc_processor, callback_object)  # type: ignore
 
 
 _subprocesses = weakref.WeakSet()  # type: weakref.WeakSet[subprocess.Popen]
@@ -362,11 +395,13 @@ def _await_tcp_connection(
         return data.process, sock, reader, writer  # type: ignore
 
 
-def _connect_tcp(port: int) -> Optional[socket.socket]:
+def _connect_tcp(host:str, port: int) -> Optional[socket.socket]:
     start_time = time.time()
     while time.time() - start_time < TCP_CONNECT_TIMEOUT:
         try:
-            return socket.create_connection(('localhost', port))
+            if host is None or len(host) == 0:
+                host = "localhost"
+            return socket.create_connection((host, port))
         except ConnectionRefusedError:
             pass
     return None
