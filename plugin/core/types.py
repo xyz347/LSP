@@ -614,13 +614,13 @@ class PathMap:
 
 
 class TransportConfig:
-    __slots__ = ("name", "command", "settings", "tcp_port", "env", "listener_socket")
+    __slots__ = ("name", "command", "user_config", "tcp_port", "env", "listener_socket")
 
     def __init__(
         self,
         name: str,
         command: List[str],
-        settings: Optional[Dict[str, Any]],
+        user_config: Optional[Dict[str, Any]],
         tcp_port: Optional[int],
         env: Dict[str, str],
         listener_socket: Optional[socket.socket]
@@ -629,7 +629,7 @@ class TransportConfig:
             raise ValueError('neither "command" nor "tcp_port" is provided; cannot start a language server')
         self.name = name
         self.command = command
-        self.settings = settings
+        self.user_config = user_config
         self.tcp_port = tcp_port
         self.env = env
         self.listener_socket = listener_socket
@@ -648,6 +648,7 @@ class ClientConfig:
                  enabled: bool = True,
                  init_options: DottedDict = DottedDict(),
                  settings: DottedDict = DottedDict(),
+                 user_config: DottedDict = DottedDict(), # settings will sync to remote, so put user config stored separately
                  env: Dict[str, Union[str, List[str]]] = {},
                  experimental_capabilities: Optional[Dict[str, Any]] = None,
                  disabled_capabilities: DottedDict = DottedDict(),
@@ -671,6 +672,7 @@ class ClientConfig:
         self.enabled = enabled
         self.init_options = init_options
         self.settings = settings
+        self.user_config = user_config
         self.env = env
         self.experimental_capabilities = experimental_capabilities
         self.disabled_capabilities = disabled_capabilities
@@ -689,6 +691,8 @@ class ClientConfig:
         disabled_capabilities = s.get("disabled_capabilities")
         file_watcher = cast(FileWatcherConfig, read_dict_setting(s, "file_watcher", {}))
         semantic_tokens = read_dict_setting(s, "semantic_tokens", {})
+        user_config = DottedDict(base.get("user_config", {}))
+        user_config.update(read_dict_setting(s, "user_config", {}))
         if isinstance(disabled_capabilities, dict):
             disabled_capabilities = DottedDict(disabled_capabilities)
         else:
@@ -705,6 +709,7 @@ class ClientConfig:
             enabled=bool(s.get("enabled", True)),
             init_options=init_options,
             settings=settings,
+            user_config=user_config,
             env=read_dict_setting(s, "env", {}),
             experimental_capabilities=s.get("experimental_capabilities"),
             disabled_capabilities=disabled_capabilities,
@@ -734,6 +739,7 @@ class ClientConfig:
             enabled=d.get("enabled", False),
             init_options=DottedDict(d.get("initializationOptions")),
             settings=DottedDict(d.get("settings")),
+            user_config=DottedDict(d.get("user_config")),
             env=d.get("env", dict()),
             experimental_capabilities=d.get("experimental_capabilities"),
             disabled_capabilities=disabled_capabilities,
@@ -762,6 +768,7 @@ class ClientConfig:
             init_options=DottedDict.from_base_and_override(
                 src_config.init_options, override.get("initializationOptions")),
             settings=DottedDict.from_base_and_override(src_config.settings, override.get("settings")),
+            user_config=DottedDict.from_base_and_override(src_config.user_config, override.get("user_config")),
             env=override.get("env", src_config.env),
             experimental_capabilities=override.get(
                 "experimental_capabilities", src_config.experimental_capabilities),
@@ -800,10 +807,7 @@ class ClientConfig:
                 env[key] = sublime.expand_variables(value, variables) + os.path.pathsep + env[key]
             else:
                 env[key] = sublime.expand_variables(value, variables)
-        usets = self.settings.get("user_define")
-        if usets is None:
-            usets = {}
-        return TransportConfig(self.name, command, usets, tcp_port, env, listener_socket)
+        return TransportConfig(self.name, command, self.user_config, tcp_port, env, listener_socket)
 
     def set_view_status(self, view: sublime.View, message: str) -> None:
         if sublime.load_settings("LSP.sublime-settings").get("show_view_status"):

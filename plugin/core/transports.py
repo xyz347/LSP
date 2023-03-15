@@ -96,7 +96,7 @@ class ProcessTransport(Transport[T]):
                  callback_object: TransportCallbacks[T]) -> None:
         self._closed = False
         self._config = config
-        self._uri_replace = config.settings.get("uri_replace")
+        self._uri_replace = config.user_config.get("uri_replace")
         self._process = process
         self._socket = socket
         self._reader = reader
@@ -222,35 +222,45 @@ class ProcessTransport(Transport[T]):
             exception_log('unexpected exception type in stderr loop', ex)
         self._send_queue.put_nowait(None)
 
+    def _key_replace(self, d: Any, keys: List[str], last: str, replace: Dict[str, str], ktov: bool) -> None:
+        if type(d) is dict:
+            if len(keys) == 0:
+                if last in d:
+                    if type(d[last]) is str:
+                        s = d[last]
+                        if ktov:
+                            for r in replace:
+                                s = s.replace(r, replace[r])
+                        else:
+                            for r in replace:
+                                s = s.replace(replace[r], r)
+                        d[last] = s
+                    else:
+                        print("last element except str, but now is", d[last])
+            elif keys[0] in d:
+                self._key_replace(d[keys[0]], keys[1:], last, replace, ktov)
+        elif type(d) is list:
+            for it in d:
+                self._key_replace(it, keys, last, replace, ktov)
+
+    def _data_replace(self, d: Dict[str, Any], config_key:str, ktov: bool) -> None:
+        cfgs = self._uri_replace.get(config_key)
+        if not cfgs:
+            return
+        for cfg in cfgs:
+            keys = cfg.get("keys")
+            replace = cfg.get("replace")
+            for ks in keys:
+                pre,last = ks[:len(ks)-1], ks[len(ks)-1]
+                self._key_replace(d, pre, last, replace, ktov)
+
     def _write_replace(self, d: Dict[str, Any]) -> None:
-        if self._uri_replace and 'params' in d and 'textDocument' in d['params'] and 'uri' in d['params']['textDocument']:
-            p = d['params']['textDocument']['uri']
-            for k in self._uri_replace:
-                p = p.replace(k, self._uri_replace[k])
-            d['params']['textDocument']['uri'] = p
+        self._data_replace(d, "pub", True)
+        self._data_replace(d, "to_server", True)
 
     def _read_replace(self, d: Dict[str, Any]) -> None:
-        p = None
-        if not self._uri_replace:
-            return
-        elif 'params' in d and 'textDocument' in d['params'] and 'uri' in d['params']['textDocument']:
-            p = d['params']['textDocument']['uri']
-            for k in self._uri_replace:
-                p = p.replace(self._uri_replace[k], v)
-            d['params']['textDocument']['uri'] = p
-        elif 'params' in d and 'type' in d['params'] and d['params']['type'] ==3 and 'message' in d['params']:
-            p = d['params']['message']
-            for k in self._uri_replace:
-                p = p.replace(self._uri_replace[k], k)
-            d['params']['message'] = p
-        elif 'params' in d and 'items' in d['params']:
-            items = d['params']['items']
-            for item in items:
-                if 'scopeUri' in item:
-                    p = item['scopeUri']
-                    for k in self._uri_replace:
-                        p = p.replace(self._uri_replace[k], k)
-                    item['scopeUri'] = p
+        self._data_replace(d, "pub", False)
+        self._data_replace(d, "from_server", False)
 
 # Can be a singleton since it doesn't hold any state.
 json_rpc_processor = JsonRpcProcessor()
@@ -286,7 +296,7 @@ def create_transport(config: TransportConfig, cwd: Optional[str],
     else:
         process = start_subprocess()
         if config.tcp_port:
-            sock = _connect_tcp(config.settings.get("tcp_host"), config.tcp_port)
+            sock = _connect_tcp(config.user_config.get("tcp_host"), config.tcp_port)
             if sock is None:
                 raise RuntimeError("Failed to connect on port {}".format(config.tcp_port))
             reader = sock.makefile('rwb')  # type: ignore
